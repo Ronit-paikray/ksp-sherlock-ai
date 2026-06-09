@@ -126,6 +126,22 @@ catalyst deploy
 
 If API requests fail from the hosted client, set `VITE_API_BASE=/server/sherlock_api` before `npm run build`, or configure Catalyst API Gateway to route `/api/*` to the `sherlock_api` Advanced I/O function.
 
+## Netlify Deployment Steps
+
+The project also includes `netlify.toml` and a Netlify Functions adapter for `/api/*`.
+
+```bash
+npm install
+npx netlify login
+npx netlify deploy --prod
+```
+
+Netlify settings:
+
+- Build command: `npm run build`
+- Publish directory: `dist`
+- Function directory: `netlify/functions`
+
 ## GitHub Submission Steps
 
 If GitHub CLI is installed and authenticated:
