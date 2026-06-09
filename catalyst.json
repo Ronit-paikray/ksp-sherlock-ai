@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "targets": ["sherlock_api"],
+    "ignore": ["node_modules", ".output", "*.log"],
+    "source": "functions"
+  },
+  "client": {
+    "source": "dist"
+  }
+}
