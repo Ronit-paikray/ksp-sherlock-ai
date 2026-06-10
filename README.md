@@ -73,6 +73,12 @@ Copy `.env.example` to `.env` for local development if needed. Keep real credent
 ```bash
 PORT=4000
 VITE_API_BASE=
+OPENROUTER_API_KEY=
+PRIMARY_MODEL=deepseek/deepseek-v4-flash
+FALLBACK_MODEL=google/gemini-2.5-flash
+DEV_MODEL=qwen/qwen3-coder
+AI_TIMEOUT_MS=12000
+AI_DEMO_MODE=false
 ```
 
 For Catalyst direct function URLs, build with:
@@ -80,6 +86,39 @@ For Catalyst direct function URLs, build with:
 ```bash
 VITE_API_BASE=/server/sherlock_api npm run build
 ```
+
+## AI Architecture
+
+Production user-facing AI requests route through OpenRouter at runtime only when `OPENROUTER_API_KEY` is configured.
+
+- Primary model: `deepseek/deepseek-v4-flash`
+- Fallback model: `google/gemini-2.5-flash`
+- Development assistant model reference: `qwen/qwen3-coder`
+- Qwen3 Coder is documented for developer workflow only and is not used for production user requests.
+
+Routing:
+
+```text
+User query -> DeepSeek V4 Flash -> success response
+                         |
+                         -> timeout/rate limit/error/invalid response -> Gemini 2.5 Flash
+                         |
+                         -> fallback failure or no API key -> local demo response
+```
+
+AI-powered features:
+
+- Conversational crime search
+- FIR summarization and entity extraction
+- Similar-case reasoning support
+- Investigation report generation
+- Crime intelligence recommendations
+- Multilingual responses when requested
+
+Demo safety:
+
+- If the OpenRouter key is absent, `AI_DEMO_MODE=true`, the network fails, the primary model times out, rate limits occur, or the fallback model returns an invalid response, the MVP returns deterministic local mock responses from the preloaded fictional records.
+- Never commit real OpenRouter keys. Set them through local `.env`, Catalyst environment variables, or Netlify environment variables.
 
 ## Demo Credentials
 

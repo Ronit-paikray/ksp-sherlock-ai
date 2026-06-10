@@ -5,6 +5,9 @@ const assert = require("node:assert/strict");
 const request = require("supertest");
 
 process.env.NODE_ENV = "test";
+process.env.AI_DEMO_MODE = "true";
+process.env.PRIMARY_MODEL = "deepseek/deepseek-v4-flash";
+process.env.FALLBACK_MODEL = "google/gemini-2.5-flash";
 
 const app = require("../functions/sherlock_api");
 
@@ -12,6 +15,8 @@ test("health route reports loaded cases", async () => {
   const response = await request(app).get("/api/health").expect(200);
   assert.equal(response.body.ok, true);
   assert.ok(response.body.cases >= 25);
+  assert.equal(response.body.ai.primaryModel, "deepseek/deepseek-v4-flash");
+  assert.equal(response.body.ai.fallbackModel, "google/gemini-2.5-flash");
 });
 
 test("GET /api/cases and GET /api/cases/:id return case records", async () => {
@@ -32,6 +37,7 @@ test("POST /api/chat finds UPI fraud cases above threshold", async () => {
     .expect(200);
   assert.ok(response.body.matchingCaseIds.includes("FIR-1023"));
   assert.ok(response.body.confidence >= 70);
+  assert.equal(response.body.ai.mode, "demo");
 });
 
 test("POST /api/fir/analyze extracts key entities", async () => {
@@ -46,6 +52,7 @@ test("POST /api/fir/analyze extracts key entities", async () => {
   assert.ok(response.body.phoneNumbers.includes("9000009001"));
   assert.ok(response.body.upiReferences.includes("refunddesk@upi"));
   assert.equal(response.body.riskLevel, "High");
+  assert.equal(response.body.ai.mode, "demo");
 });
 
 test("POST /api/cases/similar returns related FIR-1023 matches", async () => {
@@ -67,6 +74,7 @@ test("POST /api/report/generate generates investigation report", async () => {
   assert.ok(response.body.caseSummary.includes("FIR-1023"));
   assert.ok(response.body.riskScore > 0);
   assert.ok(response.body.exportText.includes("Investigation Report"));
+  assert.equal(response.body.ai.mode, "demo");
 });
 
 test("case CRUD routes create, update, and delete a mock record", async () => {

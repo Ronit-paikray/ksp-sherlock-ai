@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const { aiConfig, demoAiMeta, parseJsonResponse, routeAi } = require("./ai");
 
 const app = express();
 const dataPath = path.join(__dirname, "data", "cases.json");
@@ -334,8 +335,168 @@ function reportFor(record) {
   };
 }
 
+function aiSystemPrompt() {
+  return [
+    "You are KSP Sherlock AI, a crime intelligence copilot for a fictional demo police database.",
+    "Use only the provided fictional records and extracted entities.",
+    "Be concise, operational, and careful. Do not invent real personal data.",
+    "Support English, Kannada, and Hindi if the user's question asks for a specific language.",
+    "Return useful investigation next steps, risk signals, and explainable links."
+  ].join(" ");
+}
+
+function caseContext(records) {
+  return records.slice(0, 12).map((record) => ({
+    id: record.id,
+    title: record.title,
+    crimeType: record.crimeType,
+    status: record.status,
+    city: record.city,
+    location: record.location,
+    amount: record.amount,
+    riskLevel: record.riskLevel,
+    suspects: (record.suspects || []).map((suspect) => ({
+      name: suspect.name,
+      offenderId: suspect.offenderId,
+      phone: suspect.phone,
+      upi: suspect.upi,
+      vehicle: suspect.vehicle
+    })),
+    entities: record.entities,
+    narrative: record.narrative,
+    keywords: record.keywords
+  }));
+}
+
+async function enhanceChatResponse(message, baseResponse) {
+  const ai = await routeAi(
+    [
+      { role: "system", content: aiSystemPrompt() },
+      {
+        role: "user",
+        content: JSON.stringify({
+          task: "crime_database_conversation",
+          query: message,
+          deterministicAnswer: baseResponse.answer,
+          matchingCaseIds: baseResponse.matchingCaseIds,
+          matchingCases: caseContext((baseResponse.matches || []).map((item) => item.case || item)),
+          instructions:
+            "Rewrite the answer as a polished investigation assistant response. Keep matching IDs and confidence aligned with the deterministic result."
+        })
+      }
+    ],
+    { maxTokens: 700 }
+  );
+
+  if (!ai.ok) return { ...baseResponse, ai: ai.meta };
+  return {
+    ...baseResponse,
+    answer: ai.content,
+    ai: ai.meta
+  };
+}
+
+async function enhanceFirAnalysis(text, baseAnalysis) {
+  const ai = await routeAi(
+    [
+      { role: "system", content: `${aiSystemPrompt()} Return strict JSON only.` },
+      {
+        role: "user",
+        content: JSON.stringify({
+          task: "fir_summarization_and_entity_extraction",
+          firText: text.slice(0, 5000),
+          deterministicExtraction: baseAnalysis,
+          outputSchema: {
+            summary: "string",
+            timeline: ["string"],
+            riskLevel: "Low | Medium | High",
+            suggestedNextActions: ["string"]
+          }
+        })
+      }
+    ],
+    { maxTokens: 800, responseFormat: { type: "json_object" } }
+  );
+
+  if (!ai.ok) {
+    return {
+      ...baseAnalysis,
+      suggestedNextActions: ["Review extracted entities", "Search similar cases", "Generate investigation report"],
+      ai: ai.meta
+    };
+  }
+
+  const parsed = parseJsonResponse(ai.content);
+  if (!parsed) return { ...baseAnalysis, ai: demoAiMeta("AI returned non-JSON FIR analysis") };
+  return {
+    ...baseAnalysis,
+    summary: parsed.summary || baseAnalysis.summary,
+    timeline: Array.isArray(parsed.timeline) && parsed.timeline.length ? parsed.timeline : baseAnalysis.timeline,
+    riskLevel: parsed.riskLevel || baseAnalysis.riskLevel,
+    suggestedNextActions: Array.isArray(parsed.suggestedNextActions) ? parsed.suggestedNextActions : [],
+    ai: ai.meta
+  };
+}
+
+async function enhanceReport(record, baseReport) {
+  const ai = await routeAi(
+    [
+      { role: "system", content: `${aiSystemPrompt()} Return strict JSON only.` },
+      {
+        role: "user",
+        content: JSON.stringify({
+          task: "investigation_report_generation",
+          caseRecord: caseContext([record])[0],
+          deterministicReport: baseReport,
+          outputSchema: {
+            caseSummary: "string",
+            suggestedInvestigationSteps: ["string"],
+            intelligenceRecommendations: ["string"]
+          }
+        })
+      }
+    ],
+    { maxTokens: 900, responseFormat: { type: "json_object" } }
+  );
+
+  if (!ai.ok) return { ...baseReport, ai: ai.meta };
+  const parsed = parseJsonResponse(ai.content);
+  if (!parsed) return { ...baseReport, ai: demoAiMeta("AI returned non-JSON report") };
+  const suggestedInvestigationSteps = Array.isArray(parsed.suggestedInvestigationSteps)
+    ? parsed.suggestedInvestigationSteps
+    : baseReport.suggestedInvestigationSteps;
+  return {
+    ...baseReport,
+    caseSummary: parsed.caseSummary || baseReport.caseSummary,
+    suggestedInvestigationSteps,
+    intelligenceRecommendations: Array.isArray(parsed.intelligenceRecommendations) ? parsed.intelligenceRecommendations : [],
+    exportText: [
+      `Investigation Report - ${record.id}`,
+      parsed.caseSummary || baseReport.caseSummary,
+      `Risk Score: ${baseReport.riskScore}`,
+      `Entities: ${JSON.stringify(baseReport.keyEntities)}`,
+      `Related Cases: ${baseReport.relatedCases.map((item) => `${item.caseId} (${item.percentage}%)`).join(", ")}`,
+      "Suggested Steps:",
+      ...suggestedInvestigationSteps.map((step) => `- ${step}`)
+    ].join("\n"),
+    ai: ai.meta
+  };
+}
+
 app.get("/api/health", (req, res) => {
-  res.send({ ok: true, service: "ksp-sherlock-ai", cases: memoryCases.length });
+  const config = aiConfig();
+  res.send({
+    ok: true,
+    service: "ksp-sherlock-ai",
+    cases: memoryCases.length,
+    ai: {
+      configured: Boolean(config.apiKey),
+      demoMode: config.demoMode,
+      primaryModel: config.primaryModel,
+      fallbackModel: config.fallbackModel,
+      devModel: config.devModel
+    }
+  });
 });
 
 app.get("/api/cases", (req, res) => {
@@ -353,7 +514,7 @@ app.get("/api/cases/:id", (req, res) => {
   return res.send(record);
 });
 
-app.post("/api/chat", (req, res) => {
+app.post("/api/chat", async (req, res) => {
   const { message } = sanitize(req.body || {});
   if (!message) return res.status(400).send({ error: "message is required" });
 
@@ -369,45 +530,51 @@ app.post("/api/chat", (req, res) => {
       .filter((item) => item.percentage >= 25)
       .sort((a, b) => b.percentage - a.percentage)
       .slice(0, 6);
-    return res.send({
-      answer: `Found ${related.length} cases similar to ${id}. Strongest links include shared crime type, entity reuse, and location overlap.`,
-      matchingCaseIds: related.map((item) => item.caseId),
-      confidence: related[0]?.percentage || 50,
-      suggestedNextActions: ["Review shared UPI/phone entities", "Bundle linked FIRs for a lead review", "Check jurisdiction overlap"],
-      matches: related
-    });
+    return res.send(
+      await enhanceChatResponse(message, {
+        answer: `Found ${related.length} cases similar to ${id}. Strongest links include shared crime type, entity reuse, and location overlap.`,
+        matchingCaseIds: related.map((item) => item.caseId),
+        confidence: related[0]?.percentage || 50,
+        suggestedNextActions: ["Review shared UPI/phone entities", "Bundle linked FIRs for a lead review", "Check jurisdiction overlap"],
+        matches: related
+      })
+    );
   }
 
   if (id && (query.includes("summarize") || query.includes("summary"))) {
     const record = getCaseById(id);
     if (!record) return res.status(404).send({ error: "Case not found" });
-    return res.send({
-      answer: summarize(record),
-      matchingCaseIds: [record.id],
-      confidence: 92,
-      suggestedNextActions: ["Generate full report", "Open relationship graph", "Search related cases"],
-      matches: [compactCase(record)]
-    });
+    return res.send(
+      await enhanceChatResponse(message, {
+        answer: summarize(record),
+        matchingCaseIds: [record.id],
+        confidence: 92,
+        suggestedNextActions: ["Generate full report", "Open relationship graph", "Search related cases"],
+        matches: [compactCase(record)]
+      })
+    );
   }
 
   const { results, reasons } = filterCasesByQuery(message);
   const confidence = Math.min(94, 58 + reasons.length * 12 + Math.min(20, results.length * 2));
-  return res.send({
-    answer:
-      results.length > 0
-        ? `Found ${results.length} matching case(s). Filters detected: ${reasons.join(", ") || "semantic keyword search"}.`
-        : "No strong matches found. Try adding a city, year, crime type, amount threshold, or FIR number.",
-    matchingCaseIds: results.map((record) => record.id),
-    confidence,
-    suggestedNextActions: ["Open top matching case", "Run similar-case detection", "Generate an investigation report"],
-    matches: results.slice(0, 10).map(compactCase)
-  });
+  return res.send(
+    await enhanceChatResponse(message, {
+      answer:
+        results.length > 0
+          ? `Found ${results.length} matching case(s). Filters detected: ${reasons.join(", ") || "semantic keyword search"}.`
+          : "No strong matches found. Try adding a city, year, crime type, amount threshold, or FIR number.",
+      matchingCaseIds: results.map((record) => record.id),
+      confidence,
+      suggestedNextActions: ["Open top matching case", "Run similar-case detection", "Generate an investigation report"],
+      matches: results.slice(0, 10).map(compactCase)
+    })
+  );
 });
 
-app.post("/api/fir/analyze", (req, res) => {
+app.post("/api/fir/analyze", async (req, res) => {
   const { text } = sanitize(req.body || {});
   if (!text) return res.status(400).send({ error: "text is required" });
-  res.send(analyzeFirText(text));
+  res.send(await enhanceFirAnalysis(text, analyzeFirText(text)));
 });
 
 app.post("/api/cases/similar", (req, res) => {
@@ -448,11 +615,11 @@ app.get("/api/graph/:caseId", (req, res) => {
   res.send({ caseId: record.id, nodes, edges });
 });
 
-app.post("/api/report/generate", (req, res) => {
+app.post("/api/report/generate", async (req, res) => {
   const { caseId } = sanitize(req.body || {});
   const record = getCaseById(caseId);
   if (!record) return res.status(404).send({ error: "Case not found" });
-  res.send(reportFor(record));
+  res.send(await enhanceReport(record, reportFor(record)));
 });
 
 app.post("/api/cases", (req, res) => {
