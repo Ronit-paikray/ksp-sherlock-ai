@@ -19,6 +19,7 @@ function loadCases() {
 
 function persistCases(cases) {
   memoryCases = cases;
+  if (process.env.NODE_ENV === "test") return;
   try {
     fs.writeFileSync(dataPath, `${JSON.stringify(cases, null, 2)}\n`);
   } catch (error) {
